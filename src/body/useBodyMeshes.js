@@ -10,17 +10,19 @@ function load() {
       const worker = new Worker(new URL('./body.worker.js', import.meta.url), { type: 'module' });
       worker.onmessage = (e) => {
         worker.terminate();
-        const out = {};
-        for (const [name, m] of Object.entries(e.data)) {
+        const meshes = {};
+        for (const [name, m] of Object.entries(e.data.meshes)) {
           const g = new THREE.BufferGeometry();
           g.setAttribute('position', new THREE.BufferAttribute(m.positions, 3));
           g.setAttribute('normal', new THREE.BufferAttribute(m.normals, 3));
           if (m.colors) g.setAttribute('color', new THREE.BufferAttribute(m.colors, 3));
+          if (m.region) g.setAttribute('region', new THREE.BufferAttribute(m.region, 1));
           g.setIndex(new THREE.BufferAttribute(m.index, 1));
           g.computeBoundingSphere();
-          out[name] = g;
+          meshes[name] = g;
         }
-        resolve(out);
+        meshes.regionCenters = e.data.regionCenters;
+        resolve(meshes);
       };
       worker.onerror = (err) => {
         promise = null;

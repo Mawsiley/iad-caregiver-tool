@@ -4,6 +4,24 @@ A mobile-first web app that guides family caregivers through a skin check after 
 
 English + Arabic (RTL), with spoken voice prompts.
 
+## Modules (v2 — development phase)
+
+| Module | For | What it does |
+|---|---|---|
+| **Body check** `#/exam` | Health assistants | Choose an anonymous patient code → tap **any of 34 body parts** on the 3D body → record findings (with severity), pain 0–10, danger signs and notes → get **early care, simple treatment and when-to-refer** advice. Each part is compared with the previous check of the same patient (**new / worse / better / same**) for early detection. |
+| **IAD skin check** `#/iad` | Caregivers | The original clinical map v1 (below). |
+| **Records** `#/records` | Assistants | Patients and their checks over time. |
+| **Doctor tool** `#/doctor` | Doctors | Review the advice for every body part: mark **correct**, **suggest a change**, **add a new finding**, or comment. Shows anonymous counts of what assistants find. Input is collected for the **next version**. |
+| **Admin** `#/admin` | Settings admin | System status, verify doctor accounts, accept/reject doctor contributions, export JSON/CSV. |
+
+Data is **local-first**: everything is saved on the device and synced to Google Sheets when the user is signed in and online.
+Knowledge base: `src/data/knowledge.js` (draft — to be reviewed by doctors). Backend setup (Arabic): [`gas/README.md`](gas/README.md).
+
+```
+React (Vite) ──▶ Netlify Function  netlify/functions/api.js   (JWT, PBKDF2, admin only here)
+                     └──▶ Google Apps Script  gas/Code.gs  ──▶ Google Sheets: Users · Records · Contributions
+```
+
 ## Flow (from the clinical map)
 
 | Screen | What happens |
