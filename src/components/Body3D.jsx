@@ -2,216 +2,204 @@ import { useEffect, useMemo, useRef } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls, ContactShadows } from '@react-three/drei';
 import * as THREE from 'three';
-import { PELVIS, LEG } from '../data/zones';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
+import { ZONES } from '../data/zones';
+import { useBodyMeshes } from '../body/useBodyMeshes';
+import { ZONE_COUNT, ZONE_GLSL, zoneIndexAt } from '../body/zoneClassify';
 
-const SKIN = '#d9a689';
-const SHIRT = '#9db8d6';
-const HAIR = '#d4d4da';
-const DIAPER = '#f4f7fb';
 const START_TARGET = [0, 0.86, 0];
-const ZONE_COLORS ={ pending: '#f59e0b', same: '#22a565', changed: '#e5484d' };
+const ZONE_COLORS = {
+  pending: new THREE.Color('#f59e0b'),
+  same: new THREE.Color('#1f9d5c'),
+  changed: new THREE.Color('#e5484d'),
+};
 
-// Body meshes swallow clicks so a zone hidden behind the body can't be tapped through it.
+// Body parts other than the skin swallow clicks so zones behind them can't be tapped.
 const block = (e) => e.stopPropagation();
 
-function Ell({ p, r, color = SKIN, seg = 40 }) {
-  return (
-    <mesh position={p} scale={r} onClick={block}>
-      <sphereGeometry args={[1, seg, Math.round(seg * 0.6)]} />
-      <meshStandardMaterial color={color} roughness={0.78} />
-    </mesh>
-  );
+/* Skin: physically based material + a shader patch that paints the skin zones
+   directly on the body surface (with a thin outline between zones). */
+function useSkinMaterial() {
+  return useMemo(() => {
+    const uniforms = {
+      uZoneColor: { value: Array.from({ length: ZONE_COUNT }, () => new THREE.Color()) },
+      uZoneMix: { value: new Float32Array(ZONE_COUNT) },
+      uZoneGlow: { value: new Float32Array(ZONE_COUNT) },
+    };
+    const material = new THREE.MeshPhysicalMaterial({
+      vertexColors: true,
+      roughness: 0.62,
+      sheen: 0.18,
+      sheenRoughness: 0.55,
+      sheenColor: new THREE.Color('#ffcbb8'),
+      clearcoat: 0.04,
+      clearcoatRoughness: 0.6,
+    });
+    material.onBeforeCompile = (shader) => {
+      Object.assign(shader.uniforms, uniforms);
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', '#include <common>\nvarying vec3 vObjPos;')
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvObjPos = position;');
+      shader.fragmentShader = shader.fragmentShader
+        .replace(
+          '#include <common>',
+          `#include <common>
+varying vec3 vObjPos;
+uniform vec3 uZoneColor[${ZONE_COUNT}];
+uniform float uZoneMix[${ZONE_COUNT}];
+uniform float uZoneGlow[${ZONE_COUNT}];
+${ZONE_GLSL}`
+        )
+        .replace(
+          '#include <color_fragment>',
+          `#include <color_fragment>
+int zi = zoneIndexAt(vObjPos);
+float zMix = 0.0;
+float zGlow = 0.0;
+vec3 zCol = vec3(0.0);
+if (zi > 0) { zMix = uZoneMix[zi]; zGlow = uZoneGlow[zi]; zCol = uZoneColor[zi]; }
+if (zMix > 0.0) {
+  float e = 0.0035;
+  bool edge = zoneIndexAt(vObjPos + vec3(e, 0.0, 0.0)) != zi || zoneIndexAt(vObjPos - vec3(e, 0.0, 0.0)) != zi
+           || zoneIndexAt(vObjPos + vec3(0.0, e, 0.0)) != zi || zoneIndexAt(vObjPos - vec3(0.0, e, 0.0)) != zi
+           || zoneIndexAt(vObjPos + vec3(0.0, 0.0, e)) != zi || zoneIndexAt(vObjPos - vec3(0.0, 0.0, e)) != zi;
+  diffuseColor.rgb = mix(diffuseColor.rgb, zCol, zMix);
+  if (edge) diffuseColor.rgb *= 0.5;
+}`
+        )
+        .replace(
+          '#include <emissivemap_fragment>',
+          `#include <emissivemap_fragment>
+if (zMix > 0.0) totalEmissiveRadiance += zCol * zGlow;`
+        );
+    };
+    material.customProgramCacheKey = () => 'iad-skin-zones-v1';
+    return { material, uniforms };
+  }, []);
 }
 
-function Seg({ top, len, r0, r1, color = SKIN }) {
-  return (
-    <mesh position={[0, top - len / 2, 0]} onClick={block}>
-      <cylinderGeometry args={[r0, r1, len, 28]} />
-      <meshStandardMaterial color={color} roughness={0.78} />
-    </mesh>
-  );
-}
-
-// Each patch is inset slightly so neighbouring zones show a thin skin-coloured border.
-function zoneGeometry(z) {
-  if (z.on === 'pelvis') {
-    const fullRing = z.phi[1] - z.phi[0] >= Math.PI * 2 - 1e-6;
-    const ip = fullRing ? 0 : 0.035;
-    const it = 0.012;
-    const t0 = z.theta[0] + it;
-    const t1 = Math.min(z.theta[1], Math.PI) - (z.theta[1] >= Math.PI ? 0 : it);
-    return new THREE.SphereGeometry(1, 48, 32, z.phi[0] + ip, z.phi[1] - z.phi[0] - 2 * ip, t0, t1 - t0);
-  }
-  const rAt = (y) => LEG.rTop + (LEG.rBot - LEG.rTop) * (-y / LEG.thighLen);
-  const [yBot, yTop] = z.y;
-  return new THREE.CylinderGeometry(
-    rAt(yTop) * 1.05, rAt(yBot) * 1.05, yTop - yBot, 32, 1, true, z.theta[0] + 0.04, z.theta[1] - z.theta[0] - 0.08
-  );
-}
-
-function ZoneMesh({ zone, state, focused, dimmed, onTap }) {
-  const mat = useRef();
-  const geom = useMemo(() => zoneGeometry(zone), [zone]);
-  useEffect(() => () => geom.dispose(), [geom]);
-  const color = ZONE_COLORS[state];
+function Skin({ geometry, zones, results, focusId, onZoneTap }) {
+  const { material, uniforms } = useSkinMaterial();
+  useEffect(() => () => material.dispose(), [material]);
+  const activeIds = useMemo(() => new Set(zones.map((z) => z.id)), [zones]);
 
   useFrame(({ clock }) => {
-    if (!mat.current) return;
     const t = clock.elapsedTime;
-    let glow = 0.18;
-    if (focused) glow = 0.7 + 0.3 * Math.sin(t * 6);
-    else if (state === 'pending') glow = 0.35 + 0.3 * Math.sin(t * 3.2);
-    mat.current.emissiveIntensity = glow;
-    mat.current.opacity = dimmed ? 0.45 : 0.95;
+    ZONES.forEach((z, i) => {
+      const idx = i + 1;
+      const active = activeIds.has(z.id);
+      const state = results[z.id]?.status || 'pending';
+      const focused = focusId === z.id;
+      uniforms.uZoneColor.value[idx].copy(ZONE_COLORS[state]);
+      uniforms.uZoneMix.value[idx] = !active ? 0 : focusId && !focused ? 0.45 : 0.82;
+      uniforms.uZoneGlow.value[idx] = focused
+        ? 0.45 + 0.3 * Math.sin(t * 6)
+        : state === 'pending' && !focusId
+          ? 0.22 + 0.2 * Math.sin(t * 3.2)
+          : 0.06;
+    });
   });
 
-  const placement =
-    zone.on === 'pelvis'
-      ? { position: PELVIS.center, scale: PELVIS.radii.map((r) => r * 1.03) }
-      : { position: [0, (zone.y[0] + zone.y[1]) / 2, 0] };
+  const zoneAtEvent = (e) => {
+    const p = e.object.worldToLocal(e.point.clone());
+    const zone = ZONES[zoneIndexAt(p.x, p.y, p.z) - 1];
+    return zone && activeIds.has(zone.id) ? zone : null;
+  };
 
   return (
     <mesh
-      geometry={geom}
-      {...placement}
+      geometry={geometry}
+      material={material}
       onClick={(e) => {
         e.stopPropagation();
-        if (e.delta > 10) return; // it was a drag-rotate, not a tap
-        onTap?.(zone.id);
+        if (e.delta > 10 || !onZoneTap) return; // a drag-rotate, not a tap
+        const zone = zoneAtEvent(e);
+        if (zone) onZoneTap(zone.id);
       }}
-      onPointerOver={(e) => {
+      onPointerMove={(e) => {
         e.stopPropagation();
-        if (onTap) document.body.style.cursor = 'pointer';
+        document.body.style.cursor = onZoneTap && zoneAtEvent(e) ? 'pointer' : '';
       }}
       onPointerOut={() => (document.body.style.cursor = '')}
-    >
-      <meshStandardMaterial
-        ref={mat}
-        color={color}
-        emissive={color}
-        roughness={0.55}
-        transparent
-        polygonOffset
-        polygonOffsetFactor={-2}
-      />
-    </mesh>
-  );
-}
-
-function Leg({ side, diaper, children }) {
-  const s = side === 'L' ? 1 : -1;
-  const { thighLen: L, rTop, rBot } = LEG;
-  return (
-    <group position={[s * LEG.x, LEG.hipY, 0]} rotation={[0, 0, s * LEG.splay]}>
-      <Seg top={0} len={L} r0={rTop} r1={rBot} />
-      <Ell p={[0, -L, 0.004]} r={[rBot * 1.03, rBot, rBot * 1.06]} />
-      <Seg top={-L} len={0.36} r0={rBot * 0.98} r1={0.04} />
-      <Ell p={[0, -L - 0.36, 0]} r={[0.042, 0.042, 0.044]} />
-      <Ell p={[0, -L - 0.4, 0.055]} r={[0.045, 0.03, 0.11]} />
-      {diaper && (
-        <mesh position={[0, -0.035, 0]} onClick={block}>
-          <cylinderGeometry args={[rTop * 1.12, rTop * 1.05, 0.07, 28, 1, true]} />
-          <meshStandardMaterial color={DIAPER} roughness={0.9} side={THREE.DoubleSide} />
-        </mesh>
-      )}
-      {children}
-    </group>
-  );
-}
-
-function Arm({ side }) {
-  const s = side === 'L' ? 1 : -1;
-  return (
-    <group position={[s * 0.215, 1.35, 0]} rotation={[0, 0, s * 0.13]}>
-      <Seg top={0.01} len={0.12} r0={0.058} r1={0.054} color={SHIRT} />
-      <Seg top={0} len={0.29} r0={0.05} r1={0.041} />
-      <Ell p={[0, -0.29, 0]} r={[0.042, 0.042, 0.042]} />
-      <Seg top={-0.29} len={0.25} r0={0.039} r1={0.03} />
-      <Ell p={[0, -0.6, 0.005]} r={[0.03, 0.062, 0.02]} />
-    </group>
-  );
-}
-
-function Head() {
-  return (
-    <group>
-      <Seg top={1.5} len={0.1} r0={0.046} r1={0.052} />
-      <Ell p={[0, 1.6, 0]} r={[0.093, 0.114, 0.104]} />
-      {/* Gray hair cap */}
-      <mesh position={[0, 1.607, -0.008]} scale={[0.099, 0.118, 0.108]} onClick={block}>
-        <sphereGeometry args={[1, 40, 24, 0, Math.PI * 2, 0, Math.PI * 0.44]} />
-        <meshStandardMaterial color={HAIR} roughness={0.95} />
-      </mesh>
-      <Ell p={[0.094, 1.6, 0]} r={[0.014, 0.027, 0.019]} />
-      <Ell p={[-0.094, 1.6, 0]} r={[0.014, 0.027, 0.019]} />
-      <Ell p={[0, 1.588, 0.104]} r={[0.014, 0.022, 0.016]} seg={16} />
-      <Ell p={[0.033, 1.612, 0.093]} r={[0.009, 0.009, 0.006]} color="#3b3b45" seg={12} />
-      <Ell p={[-0.033, 1.612, 0.093]} r={[0.009, 0.009, 0.006]} color="#3b3b45" seg={12} />
-      {/* Reading glasses */}
-      {[1, -1].map((s) => (
-        <mesh key={s} position={[s * 0.034, 1.612, 0.1]} onClick={block}>
-          <torusGeometry args={[0.022, 0.0028, 8, 32]} />
-          <meshStandardMaterial color="#5b4636" metalness={0.3} roughness={0.4} />
-        </mesh>
-      ))}
-      <mesh position={[0, 1.614, 0.104]} rotation={[0, 0, Math.PI / 2]} onClick={block}>
-        <cylinderGeometry args={[0.0025, 0.0025, 0.026, 8]} />
-        <meshStandardMaterial color="#5b4636" />
-      </mesh>
-      <mesh position={[0, 1.563, 0.098]} rotation={[Math.PI, 0, 0]} onClick={block}>
-        <torusGeometry args={[0.018, 0.003, 8, 24, Math.PI]} />
-        <meshStandardMaterial color="#a0675a" />
-      </mesh>
-    </group>
-  );
-}
-
-// Smooth torso (shirt) from a lathe profile, flattened front-to-back.
-const TORSO_PROFILE = [
-  [0, 0.975], [0.15, 0.98], [0.172, 1.0], [0.176, 1.05], [0.168, 1.12], [0.172, 1.2],
-  [0.186, 1.28], [0.19, 1.33], [0.178, 1.38], [0.13, 1.42], [0.06, 1.44], [0, 1.445],
-].map(([x, y]) => new THREE.Vector2(x, y));
-
-function Torso() {
-  const geom = useMemo(() => new THREE.LatheGeometry(TORSO_PROFILE, 48), []);
-  return (
-    <mesh geometry={geom} scale={[1, 1, 0.68]} position={[0, 0, 0.004]} onClick={block}>
-      <meshStandardMaterial color={SHIRT} roughness={0.85} />
-    </mesh>
-  );
-}
-
-function Figure({ diaper, zones, results, focusId, onZoneTap }) {
-  const render = (z) => (
-    <ZoneMesh
-      key={z.id}
-      zone={z}
-      state={results[z.id]?.status || 'pending'}
-      focused={focusId === z.id}
-      dimmed={!!focusId && focusId !== z.id}
-      onTap={onZoneTap}
     />
   );
+}
+
+function Face() {
   return (
     <group>
-      <Head />
-      <Torso />
-      <Ell p={[0.2, 1.355, 0]} r={[0.058, 0.055, 0.058]} color={SHIRT} />
-      <Ell p={[-0.2, 1.355, 0]} r={[0.058, 0.055, 0.058]} color={SHIRT} />
-      <Arm side="L" />
-      <Arm side="R" />
-      <Ell p={PELVIS.center} r={PELVIS.radii} />
-      {diaper && (
-        <mesh position={PELVIS.center} scale={PELVIS.radii.map((r) => r * 1.07)} onClick={block}>
-          <sphereGeometry args={[1, 48, 32, 0, Math.PI * 2, Math.PI * 0.34, Math.PI * 0.66]} />
-          <meshStandardMaterial color={DIAPER} roughness={0.9} side={THREE.DoubleSide} />
-        </mesh>
-      )}
-      {zones.filter((z) => z.on === 'pelvis').map(render)}
-      <Leg side="L" diaper={diaper}>{zones.filter((z) => z.on === 'thighL').map(render)}</Leg>
-      <Leg side="R" diaper={diaper}>{zones.filter((z) => z.on === 'thighR').map(render)}</Leg>
+      {[1, -1].map((s) => (
+        <group key={s}>
+          <mesh position={[s * 0.032, 1.612, 0.0765]} onClick={block}>
+            <sphereGeometry args={[0.0155, 24, 16]} />
+            <meshPhysicalMaterial color="#f1ece4" roughness={0.25} clearcoat={1} />
+          </mesh>
+          <mesh position={[s * 0.032, 1.6115, 0.0905]} scale={[1, 1, 0.45]} onClick={block}>
+            <sphereGeometry args={[0.0072, 20, 12]} />
+            <meshPhysicalMaterial color="#5a4636" roughness={0.2} clearcoat={1} />
+          </mesh>
+          <mesh position={[s * 0.032, 1.6115, 0.0935]} scale={[1, 1, 0.4]} onClick={block}>
+            <sphereGeometry args={[0.0034, 12, 8]} />
+            <meshBasicMaterial color="#111" />
+          </mesh>
+          {/* reading glasses */}
+          <mesh position={[s * 0.034, 1.612, 0.106]} onClick={block}>
+            <torusGeometry args={[0.021, 0.0022, 8, 40]} />
+            <meshStandardMaterial color="#6b4f3a" metalness={0.4} roughness={0.35} />
+          </mesh>
+          <mesh position={[s * 0.034, 1.612, 0.106]} onClick={block}>
+            <circleGeometry args={[0.02, 32]} />
+            <meshPhysicalMaterial color="#ffffff" transparent opacity={0.12} roughness={0} />
+          </mesh>
+          <mesh position={[s * 0.069, 1.616, 0.05]} rotation={[Math.PI / 2, 0, s * 0.35]} onClick={block}>
+            <cylinderGeometry args={[0.0018, 0.0018, 0.11, 6]} />
+            <meshStandardMaterial color="#6b4f3a" metalness={0.4} roughness={0.35} />
+          </mesh>
+        </group>
+      ))}
+      <mesh position={[0, 1.614, 0.108]} rotation={[0, 0, Math.PI / 2]} onClick={block}>
+        <cylinderGeometry args={[0.0018, 0.0018, 0.03, 6]} />
+        <meshStandardMaterial color="#6b4f3a" metalness={0.4} roughness={0.35} />
+      </mesh>
     </group>
   );
+}
+
+function Figure({ meshes, diaper, zones, results, focusId, onZoneTap }) {
+  return (
+    <group>
+      <Skin geometry={meshes.body} zones={zones} results={results} focusId={focusId} onZoneTap={onZoneTap} />
+      <Face />
+      <mesh geometry={meshes.hair} onClick={block}>
+        <meshStandardMaterial color="#d9d8db" roughness={0.95} side={THREE.DoubleSide} />
+      </mesh>
+      <mesh geometry={meshes.shirt} onClick={block}>
+        <meshPhysicalMaterial color="#8eaccc" roughness={0.9} sheen={0.6} sheenColor="#c8dcf0" />
+      </mesh>
+      {diaper && (
+        <mesh geometry={meshes.diaper} onClick={block}>
+          <meshPhysicalMaterial color="#f6f8fb" roughness={0.95} sheen={0.5} sheenColor="#ffffff" />
+        </mesh>
+      )}
+    </group>
+  );
+}
+
+// Soft studio lighting from a procedural room (no external files).
+function StudioEnvironment() {
+  const { gl, scene } = useThree();
+  useEffect(() => {
+    const pmrem = new THREE.PMREMGenerator(gl);
+    const env = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    scene.environment = env;
+    scene.environmentIntensity = 0.3;
+    return () => {
+      scene.environment = null;
+      env.dispose();
+      pmrem.dispose();
+    };
+  }, [gl, scene]);
+  return null;
 }
 
 // Glides the camera to the requested front/back view until the user grabs the controls.
@@ -255,6 +243,7 @@ function CameraRig({ controls, view, frame, targetY, nonce }) {
 }
 
 export default function Body3D({ mode, zones = [], results = {}, focusId, view = 'front', nonce = 0, onZoneTap }) {
+  const meshes = useBodyMeshes();
   const controls = useRef();
   const focusZone = zones.find((z) => z.id === focusId);
   const full = mode === 'diaper';
@@ -263,34 +252,42 @@ export default function Body3D({ mode, zones = [], results = {}, focusId, view =
   const v = focusZone ? focusZone.side : view;
 
   return (
-    <Canvas
-      camera={{ position: [0, 0.9, 3.4], fov: 32, near: 0.05, far: 50 }}
-      dpr={[1, 2]}
-      onPointerMissed={() => (document.body.style.cursor = '')}
-    >
-      <hemisphereLight args={['#ffffff', '#b8a596', 1.1]} />
-      <directionalLight position={[2, 4, 3]} intensity={1.7} />
-      <directionalLight position={[-2.5, 2, -3]} intensity={0.9} />
-      <directionalLight position={[0, -2, 2]} intensity={0.35} />
-      <Figure
-        diaper={full}
-        zones={full ? [] : zones}
-        results={results}
-        focusId={focusId}
-        onZoneTap={onZoneTap}
-      />
-      <ContactShadows position={[0, 0, 0]} opacity={0.32} scale={2.5} blur={2.6} far={1.2} />
-      <OrbitControls
-        ref={controls}
-        makeDefault
-        target={START_TARGET}
-        enablePan={false}
-        minDistance={0.8}
-        maxDistance={4.5}
-        minPolarAngle={0.15}
-        maxPolarAngle={Math.PI - 0.12}
-      />
-      <CameraRig controls={controls} view={v} frame={frame} targetY={targetY} nonce={nonce} />
-    </Canvas>
+    <>
+      <Canvas
+        camera={{ position: [0, 0.9, 3.4], fov: 32, near: 0.05, far: 50 }}
+        dpr={[1, 2]}
+        onPointerMissed={() => (document.body.style.cursor = '')}
+      >
+        <StudioEnvironment />
+        <hemisphereLight args={['#fff6ee', '#9c8f86', 0.4]} />
+        <directionalLight position={[1.5, 3.5, 3]} intensity={1.3} color="#fff4ea" />
+        <directionalLight position={[-2.5, 2, -2.5]} intensity={0.9} color="#e6efff" />
+        <directionalLight position={[2, 2.5, -2.5]} intensity={0.6} color="#fff4ea" />
+        <directionalLight position={[0, -1.5, 2]} intensity={0.25} />
+        {meshes && (
+          <Figure
+            meshes={meshes}
+            diaper={full}
+            zones={full ? [] : zones}
+            results={results}
+            focusId={focusId}
+            onZoneTap={onZoneTap}
+          />
+        )}
+        <ContactShadows position={[0, 0, 0]} opacity={0.35} scale={2.5} blur={2.6} far={1.2} />
+        <OrbitControls
+          ref={controls}
+          makeDefault
+          target={START_TARGET}
+          enablePan={false}
+          minDistance={0.6}
+          maxDistance={4.5}
+          minPolarAngle={0.15}
+          maxPolarAngle={Math.PI - 0.12}
+        />
+        <CameraRig controls={controls} view={v} frame={frame} targetY={targetY} nonce={nonce} />
+      </Canvas>
+      {!meshes && <div className="body-loading" role="status" aria-label="Loading 3D body"><span /></div>}
+    </>
   );
 }

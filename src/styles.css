@@ -180,6 +180,14 @@ h1, h2 { line-height: 1.2; margin: 0; }
 }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
 
+.body-loading { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; }
+.body-loading span {
+  width: 44px; height: 44px; border-radius: 50%;
+  border: 4px solid var(--brand-soft); border-top-color: var(--brand);
+  animation: spin .9s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
 .dot { display: inline-block; width: 14px; height: 14px; border-radius: 50%; flex: none; background: var(--line); }
 .dot.pending { background: var(--pending); box-shadow: 0 0 0 4px color-mix(in srgb, var(--pending) 25%, transparent); }
 .dot.same { background: var(--same); }

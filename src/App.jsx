@@ -3,6 +3,7 @@ import Body3D from './components/Body3D.jsx';
 import { CHANGE_ILLUS, CONTENT_ILLUS, Same, Changed, Clean, Dry, Protect, Eye, Speaker } from './components/Illustrations.jsx';
 import { CHANGES, evaluate, zoneById, zonesFor } from './data/zones.js';
 import { makeT } from './i18n.js';
+import { buildPrompts } from './prompts.js';
 import { loadHistory, loadPrefs, saveHistory, savePrefs, speak, stopSpeaking } from './storage.js';
 
 export default function App() {
@@ -22,7 +23,8 @@ export default function App() {
     savePrefs({ lang, sound });
   }, [lang, sound]);
 
-  const say = useCallback((text) => sound && speak(text, lang), [sound, lang]);
+  const prompts = useMemo(() => buildPrompts(lang), [lang]);
+  const say = useCallback((id) => sound && speak(id, prompts[id], lang), [sound, lang, prompts]);
   useEffect(() => {
     if (!sound) stopSpeaking();
   }, [sound]);
@@ -151,7 +153,7 @@ function Home({ t, history, onStart, onHistory }) {
 
 /* ───────────────────────── Screen 1 ───────────────────────── */
 function DiaperScreen({ t, say, onChoose }) {
-  useEffect(() => say(t('diaperQ')), [say, t]);
+  useEffect(() => say('diaper'), [say]);
   const [view, setView] = useState('front');
   const [nonce, setNonce] = useState(0);
   return (
@@ -163,7 +165,7 @@ function DiaperScreen({ t, say, onChoose }) {
       <section className="panel">
         <StepDots n={1} />
         <p className="eyebrow">{t('diaperTitle')}</p>
-        <PromptTitle text={t('diaperQ')} say={say} t={t} />
+        <PromptTitle text={t('diaperQ')} say={say} t={t} speakId="diaper" />
         <div className="choice-grid three">
           {['urine', 'stool', 'both'].map((c) => {
             const Ill = CONTENT_ILLUS[c];
@@ -189,10 +191,10 @@ function MapScreen({ t, say, lang, session, onResult, onBack, onContinue }) {
   const done = zones.filter((z) => session.results[z.id]).length;
   const allDone = done === zones.length;
 
-  useEffect(() => say(t('mapSay')), [say, t]);
+  useEffect(() => say('map'), [say]);
   useEffect(() => {
-    if (allDone) say(t('allChecked'));
-  }, [allDone, say, t]);
+    if (allDone) say('allChecked');
+  }, [allDone, say]);
 
   const close = () => {
     setActive(null);
@@ -217,7 +219,7 @@ function MapScreen({ t, say, lang, session, onResult, onBack, onContinue }) {
 
       <section className="panel">
         <StepDots n={2} />
-        <PromptTitle text={t('mapTitle')} say={say} t={t} speakText={t('mapSay')} />
+        <PromptTitle text={t('mapTitle')} say={say} t={t} speakId="map" />
         <p className="lead">{t('mapHint')}</p>
         <div className="progress" role="progressbar" aria-valuemin={0} aria-valuemax={zones.length} aria-valuenow={done}>
           <div className="progress-bar" style={{ width: `${(done / zones.length) * 100}%` }} />
@@ -277,8 +279,8 @@ function AssessSheet({ t, say, lang, zone, initial, onCancel, onSave }) {
   const [picked, setPicked] = useState(initial?.changes || []);
 
   useEffect(() => {
-    say(stage === 'ask' ? `${zone.name[lang]}. ${t('assessReminder')} ${t('assessQ')}` : `${t('changesQ')} ${t('changesHint')}`);
-  }, [stage, say, t, zone, lang]);
+    say(stage === 'ask' ? `zone_${zone.id}` : 'changes');
+  }, [stage, say, zone]);
 
   const toggle = (c) => setPicked((p) => (p.includes(c) ? p.filter((x) => x !== c) : [...p, c]));
 
@@ -349,7 +351,7 @@ const STEPS = [
 function CareScreen({ t, say, onBack, onDone }) {
   const [i, setI] = useState(0);
   const step = STEPS[i];
-  useEffect(() => say(`${t(`${step.key}Title`)}. ${t(`${step.key}Desc`)}`), [step, say, t]);
+  useEffect(() => say(step.key), [step, say]);
   const Ill = step.Ill;
   return (
     <main className="care">
@@ -362,7 +364,7 @@ function CareScreen({ t, say, onBack, onDone }) {
         </div>
         <div className="care-illu"><Ill /></div>
         <p className="care-caption">{t(`${step.key}Caption`)}</p>
-        <PromptTitle text={t(`${step.key}Title`)} say={say} t={t} speakText={`${t(`${step.key}Title`)}. ${t(`${step.key}Desc`)}`} />
+        <PromptTitle text={t(`${step.key}Title`)} say={say} t={t} speakId={step.key} />
         <p className="lead">{t(`${step.key}Desc`)}</p>
         <div className="actions">
           <button className="btn ghost" onClick={() => (i === 0 ? onBack() : setI(i - 1))}>{t('backBtn')}</button>
@@ -405,7 +407,7 @@ function SummaryScreen({ t, say, lang, record, onDone, onNew }) {
   const body = t(level === 'ok' ? 'sumOk' : level === 'watch' ? 'sumWatch' : 'sumReport');
   const changed = Object.entries(record.results).filter(([, r]) => r.status === 'changed');
 
-  useEffect(() => say(`${title}. ${body}`), [say, title, body]);
+  useEffect(() => say(`sum_${level}`), [say, level]);
 
   const share = async () => {
     const text = buildReport(t, lang, record);
@@ -498,11 +500,11 @@ function HistoryScreen({ t, lang, history, onOpen, onClear }) {
 }
 
 /* ───────────────────────── Small pieces ───────────────────────── */
-function PromptTitle({ text, say, t, speakText }) {
+function PromptTitle({ text, say, t, speakId }) {
   return (
     <div className="prompt">
       <h1>{text}</h1>
-      <button className="icon-btn" onClick={() => say(speakText || text)} aria-label={t('replay')} title={t('replay')}>
+      <button className="icon-btn" onClick={() => say(speakId)} aria-label={t('replay')} title={t('replay')}>
         <Speaker />
       </button>
     </div>

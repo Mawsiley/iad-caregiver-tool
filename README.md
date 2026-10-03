@@ -25,8 +25,10 @@ English + Arabic (RTL), with spoken voice prompts.
 ## Tech
 
 - React 19 + Vite
-- three.js via `@react-three/fiber` and `@react-three/drei` — the body is procedurally modelled (no external model files); skin zones are surface patches on the body so they can be tapped and coloured
-- Web Speech API for voice prompts
+- three.js via `@react-three/fiber` and `@react-three/drei`
+- **Human 3D body** (`src/body/sculpt.js`): an older adult sculpted as a signed distance field of ~90 smoothly blended anatomical shapes (face, glasses, hands with fingers, knees, calves, buttocks…), meshed with marching cubes in a Web Worker. No external model files.
+- **Skin zones** (`src/body/zoneClassify.js`) are painted directly on the skin by a shader, and the same rules turn a tap on the body into the tapped area
+- **Voice prompts**: natural neural voices pre-recorded to `public/audio/{ar,en}/*.mp3`, so Arabic works on every device even without an Arabic system voice. After editing any prompt text in `src/i18n.js`, regenerate with `npm run audio`
 - `localStorage` for history (stays on the device; nothing is sent to a server)
 
 ## Run locally
