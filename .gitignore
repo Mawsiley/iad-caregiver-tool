@@ -3,3 +3,7 @@ dist
 .netlify
 .DS_Store
 *.log
+.env
+.env.*
+backups/
+backup-*.json

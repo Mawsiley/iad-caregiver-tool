@@ -15,8 +15,6 @@ export function AdminScreen({ t, lang }) {
   const [users, setUsers] = useState([]);
   const [items, setItems] = useState([]);
   const [filter, setFilter] = useState('new');
-  const [url, setUrl] = useState('');
-  const [urlMsg, setUrlMsg] = useState('');
 
   const load = useCallback(async (tk) => {
     setErr('');
@@ -29,7 +27,7 @@ export function AdminScreen({ t, lang }) {
       setUsers((await callApi('adminUsers', {}, tk)).users);
       setItems((await callApi('adminContributions', {}, tk)).items);
     } catch {
-      /* database not connected yet — status card explains */
+      /* database not configured yet — status card explains */
     }
   }, [t]);
 
@@ -97,28 +95,13 @@ export function AdminScreen({ t, lang }) {
               <li key={k}><span className={`dot ${v ? 'same' : 'changed'}`} /> {k}</li>
             ))}
             <li>
-              <span className={`dot ${status.gas.ok ? 'same' : 'changed'}`} /> Google Sheets:{' '}
-              {status.gas.ok ? `${status.gas.stats.users} users · ${status.gas.stats.records} records · ${status.gas.stats.contributions} contributions` : status.gas.message || '—'}
+              <span className={`dot ${status.database.ok ? 'same' : 'changed'}`} /> Firestore:{' '}
+              {status.database.ok
+                ? `${status.database.stats.users} ${t('users')} · ${status.database.stats.records} records · ${status.database.stats.contributions} ${t('contributions')}`
+                : status.database.message || '—'}
             </li>
           </ul>
         )}
-        <form className="inline-form" onSubmit={async (e) => {
-          e.preventDefault();
-          try {
-            const r = await callApi('updateGasUrl', { url }, token);
-            setUrlMsg(r.saved);
-            load(token);
-          } catch (ex) {
-            setUrlMsg(errText(t, ex.code));
-          }
-        }}>
-          <label className="field">
-            <span>{t('gasUrl')}</span>
-            <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://script.google.com/macros/s/…/exec" dir="ltr" />
-          </label>
-          <button className="btn ghost" type="submit">{t('saveUrl')}</button>
-          {urlMsg && <span className="muted">{urlMsg}</span>}
-        </form>
       </section>
 
       <section className="form-card">

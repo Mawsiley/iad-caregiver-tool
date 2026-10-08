@@ -14,12 +14,25 @@ English + Arabic (RTL), with spoken voice prompts.
 | **Doctor tool** `#/doctor` | Doctors | Review the advice for every body part: mark **correct**, **suggest a change**, **add a new finding**, or comment. Shows anonymous counts of what assistants find. Input is collected for the **next version**. |
 | **Admin** `#/admin` | Settings admin | System status, verify doctor accounts, accept/reject doctor contributions, export JSON/CSV. |
 
-Data is **local-first**: everything is saved on the device and synced to Google Sheets when the user is signed in and online.
-Knowledge base: `src/data/knowledge.js` (draft — to be reviewed by doctors). Backend setup (Arabic): [`gas/README.md`](gas/README.md).
+Data is **local-first**: everything is saved on the device and synced to Firestore when the user is signed in and online.
+Knowledge base: `src/data/knowledge.js` (draft — to be reviewed by doctors). Database schema: [`docs/db-schema.md`](docs/db-schema.md).
 
 ```
-React (Vite) ──▶ Netlify Function  netlify/functions/api.js   (JWT, PBKDF2, admin only here)
-                     └──▶ Google Apps Script  gas/Code.gs  ──▶ Google Sheets: Users · Records · Contributions
+React (Vite) ──▶ Netlify Function  netlify/functions/api.js   (JWT, PBKDF2, settings admin from env only)
+                     └──▶ Firestore  apps/iad-caregiver/{users, records, insights, contributions}
+```
+
+Settings admin password (run on your own computer, then add the 3 values to Netlify env):
+
+```bash
+node scripts/admin-hash.mjs "your-admin-password"
+```
+
+Database check / backup (uses the local service-account key, never uploaded):
+
+```bash
+node scripts/db-check.js iad-caregiver
+node scripts/db-backup.js iad-caregiver
 ```
 
 ## Flow (from the clinical map)

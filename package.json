@@ -11,6 +11,7 @@
     "audio": "node scripts/gen-audio.mjs"
   },
   "dependencies": {
+    "@google-cloud/firestore": "^9.3.1",
     "@react-three/drei": "^10.7.9",
     "@react-three/fiber": "^9.8.1",
     "react": "^19.3.0",
